@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<title>医道学堂</title>
+<link rel="manifest" href="/static/manifest.json">
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/logo.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1e3a5f">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ① 今日 -->
+<div class="page active" id="page-today">
+  <div class="app-head">
+    <div class="date" id="today-date"></div>
+    <div class="hello serif">医道日课</div>
+  </div>
+  <div class="m-card">
+    <div class="m-row">
+      <div>
+        <div class="m-title">今日功课</div>
+        <div class="m-desc" id="today-sub"></div>
+      </div>
+      <div class="ring" id="ring"><div><b id="ring-num">0%</b><span>今日</span></div></div>
+    </div>
+  </div>
+  <div class="m-card task" id="task-card" onclick="go('learn')">
+    <div class="m-row">
+      <div>
+        <div class="m-title">每日卡片 <span class="mini-tag blue" id="task-card-type"></span></div>
+        <div class="m-desc" id="task-card-desc"></div>
+      </div>
+      <span class="m-chip chip-blue" id="task-card-btn">去学习</span>
+    </div>
+  </div>
+  <div class="m-card task" id="task-practice" onclick="go('gongfa')">
+    <div class="m-row">
+      <div>
+        <div class="m-title">功法打卡</div>
+        <div class="m-desc" id="task-practice-desc"></div>
+      </div>
+      <span class="m-chip chip-gold" id="task-practice-btn">去练功</span>
+    </div>
+  </div>
+  <div class="m-card gold-card">
+    <div class="m-row">
+      <div>
+        <div class="m-title gold-title">医道一句</div>
+        <div class="m-desc" id="daily-quote"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ② 学习 -->
+<div class="page" id="page-learn">
+  <div class="app-head">
+    <div class="date">每日卡片 · 温故知新</div>
+    <div class="hello serif" id="learn-head">今日卡组 <span class="ask-fab" onclick="openAsk()">✦ 问一问</span></div>
+  </div>
+  <div class="deck-meta" id="deck-meta">
+    <span id="deck-label"></span>
+    <div class="dots" id="dots"></div>
+  </div>
+  <div class="deck-wrap">
+    <div class="card3d" id="flashcard" onclick="flip()">
+      <div class="card-inner">
+        <div class="face front" id="face-front"></div>
+        <div class="face back" id="face-back"></div>
+      </div>
+    </div>
+  </div>
+  <div class="audio-row" id="audio-row" style="display:none">
+    <button class="audio-btn" id="audio-btn" onclick="toggleAudio(event)">▶ 播放真人诵读</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn grey lock" id="btn-again" onclick="again()">再看看</button>
+    <button class="btn gold lock" id="btn-got" onclick="gotIt()">记住了 ✓</button>
+  </div>
+  <div class="finish-box" id="learn-finish" style="display:none">
+    <div class="ic">🌿</div>
+    <h3 class="serif" id="finish-title">今日卡片已完成</h3>
+    <p id="finish-sub"></p>
+    <div class="btn-row">
+      <button class="btn grey" onclick="location.reload()">刷新看看</button>
+      <button class="btn gold" onclick="go('gongfa')">去练功 →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ③ 功法 -->
+<div class="page" id="page-gongfa">
+  <div class="app-head">
+    <div class="date">功法打卡</div>
+    <div class="hello serif">练形 · 养气 · 存神</div>
+  </div>
+  <div class="m-card">
+    <div class="m-row">
+      <div>
+        <div class="m-title" style="font-size:22px">🔥 <span id="streak-num">0</span></div>
+        <div class="m-desc">连续打卡天数</div>
+      </div>
+      <div class="today-practice" id="today-practice-state">今日未练</div>
+    </div>
+  </div>
+  <div class="m-card">
+    <div class="m-title" style="margin-bottom:10px">今日功法</div>
+    <div class="type-row" id="gongfa-types"></div>
+    <div class="m-title" style="margin:14px 0 8px">时长（分钟）</div>
+    <div class="type-row" id="gongfa-minutes"></div>
+    <button class="btn gold checkin-btn" id="checkin-btn" onclick="doCheckin()">完成打卡</button>
+  </div>
+  <div class="m-card">
+    <div class="m-title" style="margin-bottom:6px">最近记录</div>
+    <div id="practice-history"></div>
+  </div>
+</div>
+
+<!-- ⑤ 书架 -->
+<div class="page" id="page-shelf">
+  <div class="app-head">
+    <div class="date">书架 · 全库查阅</div>
+    <div class="hello serif">博学 · 审问 · 慎思</div>
+  </div>
+  <div class="shelf-search-wrap">
+    <input class="shelf-search" id="shelf-q" type="search" placeholder="🔍 搜药材 / 穴位 / 章节 / 关键词" oninput="shelfSearch()">
+  </div>
+  <div class="shelf-chips" id="shelf-chips"></div>
+  <div class="shelf-list" id="shelf-list"></div>
+  <div class="shelf-count" id="shelf-count"></div>
+</div>
+
+<!-- ④ 我的 -->
+<div class="page" id="page-me">
+  <div class="app-head">
+    <div class="date">我的 · 学修档案</div>
+    <div class="hello serif">水到渠成</div>
+  </div>
+  <div class="stat-row">
+    <div class="stat"><b id="st-learned">0</b><span>已学卡片</span></div>
+    <div class="stat"><b id="st-tao">0/81</b><span>道德经</span></div>
+    <div class="stat"><b id="st-pct">0%</b><span>总进度</span></div>
+  </div>
+  <div class="m-card">
+    <div class="m-title" style="margin-bottom:12px">分类进度</div>
+    <div id="breakdown"></div>
+  </div>
+  <div class="m-card gold-card">
+    <div class="m-title gold-title">V2 预告</div>
+    <div class="m-desc">自测练习 · 实践日志 · 周月复盘 · AI 出题<br>——「能用则不更新」，先把每日卡片和功法练稳。</div>
+  </div>
+  <div class="m-card">
+    <div class="m-title" style="margin-bottom:6px">诵读音频</div>
+    <div class="m-desc">道德经 81 章已配好 AI 男声朗读：<b>原文 + 白话释义连读</b>，语速放慢，接近诵经节奏。想换成自己的真人录音：导出 mp3 按 <b>tao_001.mp3</b>（第一章）命名，放入服务器 <b>data/audio/</b> 替换同名文件即可，零代码改动。</div>
+  </div>
+</div>
+
+<nav class="tabbar">
+  <div class="tab active" data-p="today" onclick="go('today')"><span class="ti">◉</span>今日</div>
+  <div class="tab" data-p="learn" onclick="go('learn')"><span class="ti">☰</span>学习</div>
+  <div class="tab" data-p="shelf" onclick="go('shelf')"><span class="ti">▤</span>书架</div>
+  <div class="tab" data-p="gongfa" onclick="go('gongfa')"><span class="ti">☯</span>功法</div>
+  <div class="tab" data-p="me" onclick="go('me')"><span class="ti">◔</span>我的</div>
+</nav>
+
+<!-- 卡片详情弹层（书架点开） -->
+<div class="overlay" id="card-overlay" onclick="if(event.target===this)closeCardDetail()">
+  <div class="sheet">
+    <div class="sheet-head">
+      <span class="sheet-cat" id="cd-cat"></span>
+      <span class="sheet-close" onclick="closeCardDetail()">✕</span>
+    </div>
+    <div class="sheet-title serif" id="cd-title"></div>
+    <div class="sheet-sub" id="cd-sub"></div>
+    <div class="sheet-body" id="cd-body"></div>
+    <div class="audio-row" id="cd-audio-row" style="display:none">
+      <button class="audio-btn" id="cd-audio-btn" onclick="toggleCdAudio(event)">▶ 播放诵读</button>
+    </div>
+    <button class="btn gold ask-on-card" onclick="askFromCard()">✦ 就这张卡问一问</button>
+  </div>
+</div>
+
+<!-- AI 问答抽屉 -->
+<div class="overlay" id="ask-overlay" onclick="if(event.target===this)closeAsk()">
+  <div class="sheet ask-sheet">
+    <div class="sheet-head">
+      <span class="sheet-cat">✦ 问一问 · AI 助教</span>
+      <span class="sheet-close" onclick="closeAsk()">✕</span>
+    </div>
+    <div class="chat-list" id="chat-list"></div>
+    <div class="chat-input-row">
+      <input class="chat-input" id="chat-input" type="text" placeholder="输入你的问题…"
+             onkeydown="if(event.key==='Enter')submitAsk()">
+      <button class="chat-send" id="chat-send" onclick="submitAsk()">发送</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

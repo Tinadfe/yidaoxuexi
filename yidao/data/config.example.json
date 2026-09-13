@@ -1,0 +1,4 @@
+{
+  "_说明": "复制本文件为 config.json，把下面 dashscope_api_key 改成你自己的通义 Key",
+  "dashscope_api_key": "sk-你的通义Key填这里"
+}
