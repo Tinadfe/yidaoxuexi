@@ -16,30 +16,47 @@ from pydantic import BaseModel
 from sqlalchemy import select, func, text
 
 from database import SEED_DIR, AUDIO_DIR, BASE_DIR
-from models import engine, Base, Card, Review, Practice, Question
+from models import engine, Base, Card, Review, Practice, Question, Constitution
 from sqlalchemy.orm import Session
 
-app = FastAPI(title="医道学堂", version="1.0.0")
+app = FastAPI(title="医道学堂", version="1.1.0")
 
 SPACING = [1, 2, 4, 7, 15, 30]  # 艾宾浩斯复习间隔（天）
 PRACTICE_ITEMS = {"baduanjin": "八段锦", "zhanzhuang": "站桩", "jingzuo": "静坐"}
 
 
-# ---------------- 启动：建表 + 空库自动导入种子内容 ----------------
+# ---------------- 静态数据：体质 / 配伍 / 宜忌（不进数据库，启动加载） ----------------
+def _load_json(name: str):
+    path = os.path.join(SEED_DIR, name)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+CONSTITUTION = _load_json("constitution.json")   # 问卷 + 九型说明
+PAIRS = _load_json("pairs.json")                 # 经典配伍 + 十八反十九畏
+SUIT_MAP = _load_json("suit.json")               # 药材/成药 × 体质宜忌（按名称查）
+
+
+# ---------------- 启动：建表 + 增量导入种子内容 ----------------
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(engine)
     with Session(engine) as db:
-        if db.scalar(select(func.count(Card.id))) == 0:
-            _import_seed(db)
+        _import_seed(db)
 
 
 def _import_seed(db: Session):
-    """首次启动自动导入 data/seed 下的内容库"""
-    files = {"tao.json": "tao", "tcm.json": "tcm", "acup.json": "acup"}
+    """启动导入 data/seed 下的内容库；按类型查漏补缺（老库也能增量更新）"""
+    files = {"tao.json": "tao", "tcm.json": "tcm", "acup.json": "acup", "patent.json": "patent"}
     for fname, expected_type in files.items():
         path = os.path.join(SEED_DIR, fname)
         if not os.path.exists(path):
+            continue
+        # 增量：库里已有该类型就跳过，没有才导入
+        existing = db.scalar(select(func.count(Card.id)).where(Card.type == expected_type)) or 0
+        if existing > 0:
             continue
         with open(path, encoding="utf-8") as f:
             cards = json.load(f)
@@ -55,7 +72,7 @@ def _import_seed(db: Session):
                 audio=c.get("audio", ""),
                 seq=c.get("seq", i),
             ))
-    db.commit()
+        db.commit()
 
 
 # ---------------- 工具 ----------------
@@ -71,6 +88,13 @@ def _card_out(db: Session, card: Card, with_review: bool = False) -> dict:
         "front_text": card.front_text, "front_hint": card.front_hint,
         "back": card.back, "audio_url": audio_url,
     }
+    # 体质宜忌（药材/中成药）：前端结合用户体质显示 ✅/⚠️
+    s = SUIT_MAP.get(card.title)
+    if s:
+        d["suit"] = s.get("suit", [])
+        d["avoid"] = s.get("avoid", [])
+        d["suit_note"] = s.get("suit_note", "")
+        d["avoid_note"] = s.get("avoid_note", "")
     if with_review:
         r = db.scalar(select(Review).where(Review.card_id == card.id))
         d["is_review"] = bool(r)
@@ -246,7 +270,7 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "app", "static
 
 
 # ---------------- API：书架（全库查阅） ----------------
-TYPE_NAMES = {"tao": "道德经", "tcm": "药材", "acup": "穴位"}
+TYPE_NAMES = {"tao": "道德经", "tcm": "药材", "acup": "穴位", "patent": "中成药"}
 
 @app.get("/api/library")
 def api_library(q: str = "", type: str = ""):
@@ -265,13 +289,18 @@ def api_library(q: str = "", type: str = ""):
         rows = db.scalars(query.order_by(Card.type.desc(), Card.seq, Card.id)).all()
         out = []
         for c in rows:
-            out.append({
+            item = {
                 "id": c.id, "type": c.type, "type_name": TYPE_NAMES.get(c.type, c.type),
                 "category": c.category, "title": c.title, "subtitle": c.subtitle,
                 "preview": (c.front_text[:40] + "…") if len(c.front_text) > 40
                            else (c.front_text or c.front_hint),
                 "has_audio": bool(c.audio and os.path.exists(os.path.join(AUDIO_DIR, c.audio))),
-            })
+            }
+            s = SUIT_MAP.get(c.title)
+            if s:
+                item["suit"] = s.get("suit", [])
+                item["avoid"] = s.get("avoid", [])
+            out.append(item)
         return {"total": len(out), "items": out}
 
 
@@ -283,6 +312,165 @@ def api_card(card_id: int):
         if not c:
             raise HTTPException(404, "卡片不存在")
         return _card_out(db, c)
+
+
+# ---------------- API：体质测试（九型体质） ----------------
+BIASED_TYPES = ["A", "B", "C", "D", "E", "F", "G", "H"]   # 偏颇体质
+ALL_TYPES = ["P"] + BIASED_TYPES
+
+
+def _level_of(score: int) -> str:
+    """偏颇体质判定：≥40 是 / 30-39 倾向是 / <30 否"""
+    if score >= 40:
+        return "是"
+    if score >= 30:
+        return "倾向是"
+    return "否"
+
+
+@app.get("/api/constitution/questions")
+def api_constitution_questions():
+    """返回完整问卷：题目 + 选项 + 九型名称（供前端渲染）"""
+    if not CONSTITUTION:
+        raise HTTPException(503, "体质模块未启用")
+    return {
+        "options": CONSTITUTION.get("options", []),
+        "types": CONSTITUTION.get("types", {}),
+        "questions": CONSTITUTION.get("questions", []),
+    }
+
+
+class ConstitutionIn(BaseModel):
+    answers: dict          # {qid: 1/2/3}
+
+
+def _judge(scores: dict) -> dict:
+    """按王琦标准简化判定：主体质 / 次体质 / 各型等级"""
+    p_score = scores.get("P", 0)
+    biased = {t: scores.get(t, 0) for t in BIASED_TYPES}
+    has_true = any(s >= 40 for s in biased.values())            # 有无明确偏颇
+    has_tend = any(30 <= s < 40 for s in biased.values())      # 有无倾向
+
+    ranked = sorted(biased.items(), key=lambda x: -x[1])
+    if has_true or has_tend:
+        main_type = ranked[0][0]
+        main_level = _level_of(biased[main_type])
+        subs = [{"type": t, "level": _level_of(s)}
+                for t, s in ranked[1:] if s >= 30]
+    elif p_score >= 60:
+        main_type, main_level, subs = "P", "是", []
+    else:
+        # 分数普遍偏低：温和提示
+        main_type = "P"
+        main_level = "倾向是"
+        subs = []
+    return {"main_type": main_type, "main_level": main_level, "sub_types": subs}
+
+
+@app.post("/api/constitution/submit")
+def api_constitution_submit(body: ConstitutionIn):
+    """提交答卷：计分 + 判定 + 存库 + 返回结果与调养建议"""
+    if not CONSTITUTION:
+        raise HTTPException(503, "体质模块未启用")
+    answers = body.answers
+    if not isinstance(answers, dict) or len(answers) < 30:
+        raise HTTPException(400, "答卷不完整（至少需要答 30 题）")
+    valid_qids = {q["qid"]: q["type"] for q in CONSTITUTION["questions"]}
+    raw = {t: 0 for t in ALL_TYPES}
+    for qid, val in answers.items():
+        if qid in valid_qids and isinstance(val, int) and 1 <= val <= 3:
+            raw[valid_qids[qid]] += val
+    # 每型 5 题：原始分 5~15 → 转换分 0~100
+    scores = {t: round((v - 5) / 10 * 100) for t, v in raw.items()}
+
+    judge = _judge(scores)
+    profiles = CONSTITUTION.get("profiles", {})
+    main_profile = profiles.get(judge["main_type"], {})
+
+    with Session(engine) as db:
+        row = Constitution(main_type=judge["main_type"],
+                           sub_types=[s["type"] for s in judge["sub_types"]],
+                           scores=scores)
+        db.add(row)
+        db.commit()
+
+    return {
+        "ok": True,
+        "main_type": judge["main_type"],
+        "main_level": judge["main_level"],
+        "sub_types": judge["sub_types"],
+        "scores": scores,
+        "profile": main_profile,
+        "types": CONSTITUTION.get("types", {}),
+        "disclaimer": "本测试为学习参考（简化量表），不构成医疗诊断；身体不适请咨询专业中医师。",
+    }
+
+
+@app.get("/api/constitution/result")
+def api_constitution_result():
+    """取最近一次体质测试结果"""
+    with Session(engine) as db:
+        row = db.scalar(select(Constitution).order_by(Constitution.id.desc()).limit(1))
+        if not row:
+            return {"ok": False, "reason": "还没测过"}
+        judge = _judge(row.scores or {})
+        return {
+            "ok": True,
+            "main_type": row.main_type,
+            "main_level": judge.get("main_level", ""),
+            "sub_types": [{"type": t, "level": _level_of((row.scores or {}).get(t, 0))}
+                          for t in (row.sub_types or [])],
+            "scores": row.scores,
+            "time": row.created_at.strftime("%Y-%m-%d %H:%M"),
+            "profile": CONSTITUTION.get("profiles", {}).get(row.main_type, {}),
+            "types": CONSTITUTION.get("types", {}),
+        }
+
+
+# ---------------- API：配伍实验室 ----------------
+@app.get("/api/pair")
+def api_pair(a: str = "", b: str = ""):
+    """查两味药的配伍关系：先查十八反十九畏（危险），再查经典配伍表"""
+    a, b = a.strip(), b.strip()
+    if not a or not b:
+        raise HTTPException(400, "请提供两味药（参数 a 和 b）")
+    if a == b:
+        raise HTTPException(400, "请选择两味不同的药")
+    if not PAIRS:
+        raise HTTPException(503, "配伍模块未启用")
+    pair_set = {a, b}
+    # 1) 反畏红线
+    for p in PAIRS.get("incompatible", []):
+        if {p["a"], p["b"]} == pair_set:
+            return {"found": True, "danger": True, "relation": "相反",
+                    "source": p["source"], "note": p["note"],
+                    "effect": f"{p['note']}——禁止配伍！",
+                    "seven": PAIRS["seven"]}
+    # 2) 经典配伍
+    for p in PAIRS.get("classic", []):
+        if {p["a"], p["b"]} == pair_set:
+            return {"found": True, "danger": False, "relation": p["relation"],
+                    "formula": p["formula"], "effect": p["effect"],
+                    "note": PAIRS["seven"].get(p["relation"], ""),
+                    "seven": PAIRS["seven"]}
+    # 3) 未收录
+    return {"found": False, "danger": False,
+            "hint": "经典配伍表未收录这对组合。可以用「问一问」让 AI 助教分析这对搭配。"}
+
+
+@app.get("/api/pair/inputs")
+def api_pair_inputs():
+    """配伍实验室的可选药名（药材库 + 中成药 + 反畏涉及的药）"""
+    names = set()
+    with Session(engine) as db:
+        rows = db.scalars(select(Card).where(Card.type.in_(["tcm", "patent"]))).all()
+        for c in rows:
+            names.add(c.title)
+    for p in PAIRS.get("classic", []):
+        names.update([p["a"], p["b"]])
+    for p in PAIRS.get("incompatible", []):
+        names.update([p["a"], p["b"]])
+    return {"items": sorted(names)}
 
 
 # ---------------- API：学习问答（AI 助教） ----------------
