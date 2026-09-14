@@ -125,10 +125,10 @@
 <div class="page" id="page-shelf">
   <div class="app-head">
     <div class="date">书架 · 全库查阅</div>
-    <div class="hello serif">博学 · 审问 · 慎思</div>
+    <div class="hello serif">博学 · 审问 · 慎思 <span class="ask-fab" onclick="openPair()">⚖️ 配伍实验室</span></div>
   </div>
   <div class="shelf-search-wrap">
-    <input class="shelf-search" id="shelf-q" type="search" placeholder="🔍 搜药材 / 穴位 / 章节 / 关键词" oninput="shelfSearch()">
+    <input class="shelf-search" id="shelf-q" type="search" placeholder="🔍 搜药材 / 穴位 / 中成药 / 章节关键词" oninput="shelfSearch()">
   </div>
   <div class="shelf-chips" id="shelf-chips"></div>
   <div class="shelf-list" id="shelf-list"></div>
@@ -145,6 +145,15 @@
     <div class="stat"><b id="st-learned">0</b><span>已学卡片</span></div>
     <div class="stat"><b id="st-tao">0/81</b><span>道德经</span></div>
     <div class="stat"><b id="st-pct">0%</b><span>总进度</span></div>
+  </div>
+  <div class="m-card cons-entry" id="cons-card" onclick="openCons()">
+    <div class="m-row">
+      <div>
+        <div class="m-title">🧬 体质测试</div>
+        <div class="m-desc" id="cons-card-desc">测一测你的九型体质 · 药材和中成药会自动标注宜忌</div>
+      </div>
+      <span class="m-chip chip-gold" id="cons-card-btn">开始</span>
+    </div>
   </div>
   <div class="m-card">
     <div class="m-title" style="margin-bottom:12px">分类进度</div>
@@ -197,6 +206,48 @@
       <input class="chat-input" id="chat-input" type="text" placeholder="输入你的问题…"
              onkeydown="if(event.key==='Enter')submitAsk()">
       <button class="chat-send" id="chat-send" onclick="submitAsk()">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- 体质测试弹层 -->
+<div class="overlay" id="cons-overlay" onclick="if(event.target===this)closeCons()">
+  <div class="sheet">
+    <div class="sheet-head">
+      <span class="sheet-cat">🧬 体质测试</span>
+      <span class="sheet-close" onclick="closeCons()">✕</span>
+    </div>
+    <div class="cons-wrap" id="cons-quiz">
+      <div class="cons-progress" id="cons-progress"></div>
+      <div class="cons-group-title" id="cons-group-title"></div>
+      <div class="cons-questions" id="cons-questions"></div>
+      <div class="btn-row">
+        <button class="btn grey" id="cons-prev" onclick="consPrev()">上一组</button>
+        <button class="btn gold" id="cons-next" onclick="consNext()">下一组 →</button>
+      </div>
+      <div class="cons-tip">凭最近三个月的总体感觉作答，没有对错。</div>
+    </div>
+    <div class="cons-wrap" id="cons-result" style="display:none"></div>
+  </div>
+</div>
+
+<!-- 配伍实验室弹层 -->
+<div class="overlay" id="pair-overlay" onclick="if(event.target===this)closePair()">
+  <div class="sheet">
+    <div class="sheet-head">
+      <span class="sheet-cat">⚖️ 配伍实验室</span>
+      <span class="sheet-close" onclick="closePair()">✕</span>
+    </div>
+    <div class="cons-wrap">
+      <div class="pair-inputs">
+        <input class="pair-in" id="pair-a" list="pair-list" placeholder="药名 A（如：黄芪）">
+        <span class="pair-plus">＋</span>
+        <input class="pair-in" id="pair-b" list="pair-list" placeholder="药名 B（如：当归）">
+        <datalist id="pair-list"></datalist>
+      </div>
+      <button class="btn gold pair-go" onclick="queryPair()">查询配伍关系</button>
+      <div id="pair-result"></div>
+      <div class="cons-tip">七情：相须协同增效 · 相使辅药助主 · 相畏相杀减毒 · 相恶减效 · <b class="pair-red">相反禁配（十八反十九畏）</b></div>
     </div>
   </div>
 </div>
