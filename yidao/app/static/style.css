@@ -174,3 +174,80 @@ body{
 
 /* ---------- 问一问入口 ---------- */
 .ask-fab{font-size:12px;color:var(--gold);background:var(--gold-bg);border:1px solid #ead9b0;border-radius:999px;padding:4px 12px;margin-left:10px;vertical-align:3px;cursor:pointer;font-weight:700;letter-spacing:0;}
+
+/* ---------- 体质宜忌角标 ---------- */
+.fit-badge,.avoid-badge,.neutral-badge{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;vertical-align:1.5px;letter-spacing:0;}
+.fit-badge{background:var(--green-bg);color:var(--green);}
+.avoid-badge{background:#fdecec;color:#c0392b;}
+.neutral-badge{background:#f0f3f7;color:var(--muted);}
+
+/* 详情弹层 · 体质匹配块 */
+.cd-fit{display:flex;flex-direction:column;gap:3px;border-radius:12px;padding:10px 12px;margin:10px 0;font-size:12.5px;line-height:1.6;}
+.cd-fit.ok{background:var(--green-bg);}
+.cd-fit.no{background:#fdecec;}
+.cd-fit.mid{background:var(--blue-bg);}
+.cd-fit b{font-size:12.5px;}
+.cd-fit.ok b{color:var(--green);}
+.cd-fit.no b{color:#c0392b;}
+.cd-fit.mid b{color:var(--blue);}
+.cd-fit span{color:#5a6b80;}
+
+/* ---------- 体质测试 ---------- */
+.cons-wrap{padding:6px 2px 2px;}
+.cons-progress{display:flex;justify-content:space-between;margin:2px 0 14px;}
+.cp-dot{font-size:14px;opacity:.35;transition:.2s;}
+.cp-dot.cur{opacity:1;transform:scale(1.35);}
+.cp-dot.done{opacity:.75;}
+.cons-group-title{font-size:17px;font-weight:700;color:var(--blue-dark);letter-spacing:1px;text-align:center;margin-bottom:12px;}
+.cons-q{margin-bottom:16px;}
+.cons-q-text{font-size:13.5px;font-weight:600;color:var(--ink);margin-bottom:8px;line-height:1.6;}
+.cons-opts{display:flex;gap:8px;}
+.cons-opt{flex:1;text-align:center;padding:9px 0;border-radius:12px;background:#f2f5f9;color:#5a6b80;font-size:13px;font-weight:600;border:1.5px solid transparent;cursor:pointer;transition:.15s;}
+.cons-opt.on{background:var(--gold-bg);border-color:var(--gold);color:var(--gold);}
+.cons-tip{font-size:11px;color:var(--muted);text-align:center;margin:12px 0 4px;line-height:1.7;}
+.cons-main{background:linear-gradient(150deg,var(--blue) 0%,var(--blue-dark) 90%);border-radius:18px;padding:22px 16px;color:#fff;text-align:center;margin-bottom:12px;}
+.cons-main-icon{font-size:40px;}
+.cons-main-name{font-size:24px;font-weight:700;margin-top:6px;letter-spacing:3px;}
+.cons-main-name small{font-size:12px;opacity:.8;font-weight:400;letter-spacing:1px;}
+.cons-main-sum{font-size:12px;opacity:.85;margin-top:6px;}
+.cons-subs{font-size:12px;color:#5a6b80;margin-bottom:12px;line-height:2;}
+.sub-chip{display:inline-block;background:var(--blue-bg);color:var(--blue);border-radius:999px;padding:3px 10px;margin:0 3px;font-weight:600;font-size:11px;}
+.cons-detail{background:#fff;border:1px solid var(--line);border-radius:14px;padding:4px 14px;}
+.cd-row{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line);font-size:12.5px;line-height:1.7;}
+.cd-row:last-child{border-bottom:none;}
+.cd-row b{flex:none;color:var(--blue-dark);width:64px;}
+.cd-row span{color:#4a5a6d;}
+.cons-scores{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-top:12px;}
+.cs-title{font-size:12px;font-weight:700;color:var(--blue-dark);margin-bottom:8px;letter-spacing:1px;}
+.score-row{display:flex;align-items:center;gap:8px;margin-bottom:7px;}
+.score-row:last-child{margin-bottom:0;}
+.s-name{flex:none;width:86px;font-size:11px;color:#5a6b80;}
+.s-bar{flex:1;height:8px;background:#eef1f5;border-radius:99px;overflow:hidden;}
+.s-fill{height:100%;border-radius:99px;background:var(--blue-bg);transition:width .6s;}
+.s-fill.mid{background:var(--gold-light);}
+.s-fill.hot{background:linear-gradient(90deg,var(--gold-light),var(--gold));}
+.s-val{flex:none;width:26px;text-align:right;font-size:11px;font-weight:700;color:var(--blue-dark);}
+.cons-disclaimer{font-size:10.5px;color:var(--muted);text-align:center;margin:14px 0 4px;line-height:1.7;}
+
+/* ---------- 配伍实验室 ---------- */
+.pair-inputs{display:flex;align-items:center;gap:8px;margin:8px 0 12px;}
+.pair-in{flex:1;min-width:0;border:1.5px solid var(--line);border-radius:12px;padding:11px 12px;font-size:14px;background:#fff;color:var(--ink);}
+.pair-in:focus{outline:none;border-color:var(--gold);}
+.pair-plus{color:var(--gold);font-size:18px;font-weight:700;}
+.pair-go{margin-bottom:14px;}
+.pair-card{border-radius:16px;padding:16px;margin-top:4px;border:1.5px solid var(--line);}
+.pair-card.danger{background:#fdecec;border-color:#f5b7b1;}
+.pair-card.good{background:var(--green-bg);border-color:#bfe3cc;}
+.pair-card.mid{background:var(--gold-bg);border-color:#ead9b0;}
+.pair-card.none{background:#fff;}
+.pr-head{font-size:11px;font-weight:700;letter-spacing:1px;}
+.pair-card.danger .pr-head{color:#c0392b;}
+.pair-card.good .pr-head{color:var(--green);}
+.pair-card.mid .pr-head{color:var(--gold);}
+.pair-card.none .pr-head{color:var(--muted);}
+.pr-title{font-size:19px;font-weight:700;color:var(--ink);margin:6px 0 4px;letter-spacing:1px;}
+.pr-note{font-size:13px;color:#4a5a6d;line-height:1.7;}
+.pr-sub{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.7;}
+.pair-red{color:#c0392b;}
+.pair-loading{font-size:13px;color:var(--muted);text-align:center;padding:18px 0;}
+.pair-ask{margin-top:10px;}
