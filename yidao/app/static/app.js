@@ -7,6 +7,7 @@ let queue = [];            // 学习队列（新卡 + 复习卡）
 let qi = 0;                // 队列位置
 let flipped = false;
 let audioEl = null;       // 音频对象
+let myType = '';           // 我的体质码（P/A/.../H），测过才有
 const GONGFA = [
   {k:'baduanjin', n:'八段锦'},
   {k:'zhanzhuang', n:'站桩'},
@@ -54,10 +55,35 @@ let shelfType = '';           // ''=全部
 let shelfTimer = null;
 const SHELF_CHIPS = [
   {k:'', n:'全部'},
-  {k:'tao', n:'道德经'},
   {k:'tcm', n:'药材'},
+  {k:'patent', n:'中成药'},
   {k:'acup', n:'穴位'},
+  {k:'tao', n:'道德经'},
 ];
+
+/* 体质角标：测过体质且该卡有宜忌 → 返回角标 HTML */
+function fitBadge(c){
+  if(!myType || !c.suit || !c.avoid) return '';
+  if(c.suit.includes(myType)) return ' <span class="fit-badge">✅ 宜</span>';
+  if(c.avoid.includes(myType)) return ' <span class="avoid-badge">⚠️ 忌</span>';
+  return ' <span class="neutral-badge">—</span>';
+}
+/* 详情/学习卡的体质匹配块 */
+function fitBlock(c){
+  if(!myType || !c.suit || !c.avoid) return '';
+  let cls, icon, label, note;
+  if(c.suit.includes(myType)){
+    cls='ok'; icon='✅'; label='适合你的体质';
+    note = c.suit_note || '';
+  }else if(c.avoid.includes(myType)){
+    cls='no'; icon='⚠️'; label='你的体质需慎用';
+    note = c.avoid_note || '';
+  }else{
+    cls='mid'; icon='ℹ️'; label='与你的体质无明确宜忌';
+    note = c.suit_note || '按需使用，拿不准就问一问 AI 助教。';
+  }
+  return `<div class="cd-fit ${cls}"><b>${icon} ${label}</b><span>${note}</span></div>`;
+}
 function renderShelfChips(){
   $('shelf-chips').innerHTML = SHELF_CHIPS.map(c=>
     `<span class="type-chip ${shelfType===c.k?'on':''}" onclick="pickShelfType('${c.k}')">${c.n}</span>`).join('');
@@ -76,7 +102,7 @@ async function loadShelf(){
     $('shelf-list').innerHTML = r.items.length ? r.items.map(c=>
       `<div class="shelf-item" onclick="openCardDetail(${c.id})">
         <div class="si-main">
-          <div class="si-title">${c.title}${c.has_audio?' <span class="si-audio">🔊</span>':''}</div>
+          <div class="si-title">${c.title}${c.has_audio?' <span class="si-audio">🔊</span>':''}${fitBadge(c)}</div>
           <div class="si-preview">${c.preview||c.subtitle||''}</div>
         </div>
         <span class="si-tag ${c.type}">${c.type_name}</span>
@@ -98,6 +124,7 @@ async function openCardDetail(id){
   if(cdCard.front_text){
     body += `<div class="cd-front serif">${cdCard.front_text}</div>`;
   }
+  body += fitBlock(cdCard);
   body += '<dl>' + (cdCard.back||[]).map(r=>
     `<dt>${r[0]}</dt><dd class="${/记忆|读法|互证/.test(r[0])?'hook':''}">${r[1]}</dd>`).join('') + '</dl>';
   $('cd-body').innerHTML = body;
@@ -256,6 +283,7 @@ function showCard(){
   f.innerHTML =
     `<span class="cat">${c.category}</span>` +
     (c.is_review ? `<span class="review-badge">复习</span>` : '') +
+    fitBadge(c) +
     (c.front_text
       ? `<div class="serif" style="font-size:17px;letter-spacing:2px;margin-top:6px">${c.title}</div>
          <div class="long-text">${c.front_text}</div>
@@ -401,11 +429,195 @@ async function loadStats(){
   }catch(e){ toast('统计加载失败'); }
 }
 
+/* ---------------- 体质测试 ---------------- */
+let consData = null;        // 问卷数据
+let consAnswers = {};       // {qid: 1/2/3}
+let consGroup = 0;          // 当前组（0~8，每组一型）
+const CONS_ORDER = ['P','A','B','C','D','E','F','G','H'];
+
+async function openCons(){
+  $('cons-overlay').classList.add('show');
+  $('cons-quiz').style.display = 'block';
+  $('cons-result').style.display = 'none';
+  if(!consData){
+    try{
+      consData = await api('/api/constitution/questions');
+    }catch(e){ toast('问卷加载失败'); return; }
+  }
+  consGroup = 0; consAnswers = {};
+  renderConsGroup();
+}
+function closeCons(){ $('cons-overlay').classList.remove('show'); }
+
+function renderConsGroup(){
+  const t = CONS_ORDER[consGroup];
+  const info = consData.types[t] || {};
+  const qs = consData.questions.filter(q=>q.type===t);
+  $('cons-progress').innerHTML = CONS_ORDER.map((x,i)=>
+    `<span class="cp-dot ${i<consGroup?'done':i===consGroup?'cur':''}">${consData.types[x]?.icon||x}</span>`).join('');
+  $('cons-group-title').textContent = `${info.name||t} ${info.icon||''}`;
+  $('cons-questions').innerHTML = qs.map(q=>
+    `<div class="cons-q">
+       <div class="cons-q-text">${q.text}</div>
+       <div class="cons-opts">
+         ${consData.options.map(o=>
+           `<span class="cons-opt ${consAnswers[q.qid]===o.value?'on':''}" onclick="pickCons('${q.qid}',${o.value})">${o.label}</span>`).join('')}
+       </div>
+     </div>`).join('');
+  $('cons-prev').style.visibility = consGroup===0 ? 'hidden' : 'visible';
+  $('cons-next').textContent = consGroup===CONS_ORDER.length-1 ? '提交答卷 ✓' : '下一组 →';
+}
+function pickCons(qid, val){
+  consAnswers[qid] = val;
+  renderConsGroup();
+}
+function consPrev(){ if(consGroup>0){ consGroup--; renderConsGroup(); } }
+async function consNext(){
+  const t = CONS_ORDER[consGroup];
+  const qs = consData.questions.filter(q=>q.type===t);
+  const answered = qs.filter(q=>consAnswers[q.qid]).length;
+  if(answered < qs.length){ toast('这组还有题没答完'); return; }
+  if(consGroup < CONS_ORDER.length-1){
+    consGroup++; renderConsGroup();
+    $('cons-questions').scrollTop = 0;
+  }else{
+    await submitCons();
+  }
+}
+async function submitCons(){
+  const btn = $('cons-next');
+  btn.textContent = '判定中…'; btn.style.pointerEvents='none';
+  try{
+    const r = await api('/api/constitution/submit', {method:'POST', body: JSON.stringify({answers: consAnswers})});
+    renderConsResult(r);
+  }catch(e){
+    toast('提交失败，重试一下');
+    btn.textContent = '提交答卷 ✓'; btn.style.pointerEvents='';
+  }
+}
+function renderConsResult(r){
+  myType = r.main_type;               // 立即生效：角标马上出现
+  const info = (r.types||{})[r.main_type] || {};
+  const p = r.profile || {};
+  const scoreRows = CONS_ORDER.map(t=>{
+    const s = (r.scores||{})[t] || 0;
+    const nm = (r.types||{})[t]?.name || t;
+    const hot = s>=40, mid = s>=30;
+    return `<div class="score-row">
+      <span class="s-name">${(r.types||{})[t]?.icon||''} ${nm}</span>
+      <div class="s-bar"><div class="s-fill ${hot?'hot':mid?'mid':''}" style="width:${s}%"></div></div>
+      <span class="s-val">${s}</span>
+    </div>`;
+  }).join('');
+  const subHtml = (r.sub_types||[]).map(s=>
+    `<span class="sub-chip">${(r.types||{})[s.type]?.icon||''} ${(r.types||{})[s.type]?.name||s.type}（${s.level}）</span>`).join('');
+  $('cons-quiz').style.display = 'none';
+  const box = $('cons-result');
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div class="cons-main">
+      <div class="cons-main-icon">${info.icon||'🌿'}</div>
+      <div class="cons-main-name serif">${info.name||r.main_type} <small>${r.main_level}</small></div>
+      <div class="cons-main-sum">${p.summary||''}</div>
+    </div>
+    ${subHtml ? `<div class="cons-subs">兼有：${subHtml}</div>` : ''}
+    <div class="cons-detail">
+      <div class="cd-row"><b>典型表现</b><span>${p.traits||''}</span></div>
+      <div class="cd-row"><b>调养方向</b><span>${p.advice||''}</span></div>
+      <div class="cd-row"><b>宜吃</b><span>${p.foods||''}</span></div>
+      <div class="cd-row"><b>忌口</b><span>${p.avoid_foods||''}</span></div>
+      <div class="cd-row"><b>用药方向</b><span>${p.herb_tip||''}</span></div>
+    </div>
+    <div class="cons-scores"><div class="cs-title">九型得分</div>${scoreRows}</div>
+    <div class="cons-disclaimer">${r.disclaimer||''}</div>
+    <div class="btn-row">
+      <button class="btn grey" onclick="openCons()">重测一次</button>
+      <button class="btn gold" onclick="closeCons(); go('shelf'); pickShelfType('patent')">看看适合我的中成药 →</button>
+    </div>`;
+  loadConsCard();
+}
+
+/* 我的页体质卡片 */
+async function loadConsCard(){
+  try{
+    const r = await api('/api/constitution/result');
+    if(r.ok){
+      myType = r.main_type;
+      const info = (r.types||{})[r.main_type] || {};
+      $('cons-card-desc').innerHTML = `${info.icon||''} <b>${info.name||''}</b>（${r.main_level}）· 测于 ${r.time}<br>${(r.profile||{}).summary||''}`;
+      $('cons-card-btn').textContent = '查看';
+    }
+  }catch(e){}
+}
+
+/* ---------------- 配伍实验室 ---------------- */
+async function openPair(){
+  $('pair-overlay').classList.add('show');
+  $('pair-result').innerHTML = '';
+  const dl = $('pair-list');
+  if(!dl.dataset.loaded){
+    try{
+      const r = await api('/api/pair/inputs');
+      dl.innerHTML = r.items.map(n=>`<option value="${n}">`).join('');
+      dl.dataset.loaded = '1';
+    }catch(e){}
+  }
+}
+function closePair(){ $('pair-overlay').classList.remove('show'); }
+
+async function queryPair(){
+  const a = $('pair-a').value.trim(), b = $('pair-b').value.trim();
+  if(!a || !b){ toast('请填两个药名'); return; }
+  const box = $('pair-result');
+  box.innerHTML = '<div class="pair-loading">查询中…</div>';
+  try{
+    const r = await api(`/api/pair?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    if(r.danger){
+      box.innerHTML = `
+        <div class="pair-card danger">
+          <div class="pr-head">🚫 禁止配伍 · ${r.source}</div>
+          <div class="pr-title">${a} ＋ ${b}</div>
+          <div class="pr-note">${r.effect}</div>
+          <div class="pr-sub">「十八反」「十九畏」是历代公认的配伍红线，临床禁止同用。</div>
+        </div>`;
+    }else if(r.found){
+      const good = (r.relation==='相须' || r.relation==='相使');
+      box.innerHTML = `
+        <div class="pair-card ${good?'good':'mid'}">
+          <div class="pr-head">${good?'🤝 经典配伍':'⚠️ 需注意'} · ${r.relation}</div>
+          <div class="pr-title">${a} ＋ ${b}</div>
+          <div class="pr-note">${r.effect}${r.formula?`（出自 <b>${r.formula}</b>）`:''}</div>
+          <div class="pr-sub">${r.note||''}</div>
+        </div>`;
+    }else{
+      box.innerHTML = `
+        <div class="pair-card none">
+          <div class="pr-head">📖 经典配伍表未收录</div>
+          <div class="pr-title">${a} ＋ ${b}</div>
+          <div class="pr-sub">${r.hint||''}</div>
+          <button class="btn gold pair-ask" onclick="pairAskAI()">✦ 让 AI 助教分析</button>
+        </div>`;
+    }
+  }catch(e){
+    box.innerHTML = `<div class="pair-card none"><div class="pr-sub">查询失败：${e.message||'网络问题'}</div></div>`;
+  }
+}
+function pairAskAI(){
+  const a = $('pair-a').value.trim(), b = $('pair-b').value.trim();
+  closePair();
+  openAsk(0);
+  setTimeout(()=>{
+    $('chat-input').value = `请从中医配伍（七情）角度分析：${a}和${b}一起用是什么关系？适合什么情况？`;
+    submitAsk();
+  }, 250);
+}
+
 /* ---------------- 启动 ---------------- */
 const d = new Date();
 const WEEK = ['日','一','二','三','四','五','六'];
 $('today-date').textContent = `${d.getFullYear()} 年 ${d.getMonth()+1} 月 ${d.getDate()} 日 · 星期${WEEK[d.getDay()]}`;
 loadToday();
+loadConsCard();   // 拉体质结果：有则全站显示宜忌角标
 
 /* Service Worker（PWA 离线缓存） */
 if('serviceWorker' in navigator){
