@@ -65,4 +65,15 @@ class Question(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class Constitution(Base):
+    """体质测试结果：九型体质问卷的历次得分"""
+    __tablename__ = "constitutions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    main_type: Mapped[str] = mapped_column(String(4))                # 主体质 P/A/.../H
+    sub_types: Mapped[list] = mapped_column(JSON, default=list)      # 次体质代码列表
+    scores: Mapped[dict] = mapped_column(JSON)                       # 各型转换分
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 Base.metadata.create_all(engine)
