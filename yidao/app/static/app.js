@@ -137,16 +137,24 @@ function closeCardDetail(){
   $('card-overlay').classList.remove('show');
   stopCdAudio(); cdCard = null;
 }
-function toggleCdAudio(ev){
+async function toggleCdAudio(ev){
   ev.stopPropagation();
   if(!cdCard || !cdCard.audio_url) return;
   const btn = $('cd-audio-btn');
   if(cdAudio){ stopCdAudio(); btn.textContent='▶ 原文 + 白话'; return; }
-  cdAudio = new Audio(cdCard.audio_url);
-  cdAudio.onended = ()=>{ btn.textContent='▶ 原文 + 白话'; cdAudio=null; };
-  cdAudio.onerror = ()=>{ toast('音频加载失败'); cdAudio=null; };
-  cdAudio.play().catch(()=>toast('音频加载失败'));
-  btn.textContent = '❚❚ 暂停';
+  btn.textContent = '⏳ 加载中…';
+  try{
+    const src = await audioSrc(cdCard.audio_url);
+    cdAudio = new Audio(src);
+    cdAudio.onended = ()=>{ btn.textContent='▶ 原文 + 白话'; btn.classList.remove('playing'); cdAudio=null; };
+    cdAudio.onerror = ()=>{ toast('音频加载失败'); btn.textContent='▶ 原文 + 白话'; cdAudio=null; };
+    await cdAudio.play();
+    btn.textContent = '❚❚ 暂停';
+  }catch(e){
+    btn.textContent='▶ 原文 + 白话';
+    toast('音频加载失败');
+    cdAudio = null;
+  }
 }
 function stopCdAudio(){ if(cdAudio){ cdAudio.pause(); cdAudio=null; } }
 function askFromCard(){
@@ -348,11 +356,41 @@ function nextCard(){
   }
 }
 
-/* ---------------- 音频 ---------------- */
+/* ---------------- 音频 ----------------
+   服务器（Railway 边缘）会吞掉 Range 请求头，iOS Safari 探测不到 206 就拒绝播放。
+   这里改为：fetch 整个文件 → Blob URL → 播放，全程不依赖 Range。
+--------------------------------------- */
+const AUDIO_BLOB = {};          // 原始 url -> blob url 缓存
+let audioUnlocked = false;
+
+/* iOS 要求用户手势内同步调用过一次 play()，之后异步播放才被允许 */
+function unlockAudio(){
+  if(audioUnlocked) return;
+  try{
+    const a = new Audio();
+    a.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+    a.muted = true;
+    const p = a.play();
+    if(p && p.then) p.then(()=>{ audioUnlocked = true; }).catch(()=>{});
+    else audioUnlocked = true;
+  }catch(e){}
+}
+['touchstart','click'].forEach(ev =>
+  document.addEventListener(ev, unlockAudio, { once:true, passive:true, capture:true }));
+
+/* 把音频抓成 Blob（普通 GET，不需要 206），并缓存 */
+async function audioSrc(url){
+  if(AUDIO_BLOB[url]) return AUDIO_BLOB[url];
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  AUDIO_BLOB[url] = URL.createObjectURL(await res.blob());
+  return AUDIO_BLOB[url];
+}
+
 function stopAudio(){
   if(audioEl){ audioEl.pause(); audioEl=null; }
 }
-function toggleAudio(ev){
+async function toggleAudio(ev){
   ev.stopPropagation();
   const c = queue[qi];
   if(!c || !c.audio_url) return;
@@ -362,11 +400,19 @@ function toggleAudio(ev){
     btn.textContent='▶ 原文 + 白话'; btn.classList.remove('playing');
     return;
   }
-  audioEl = new Audio(c.audio_url);
-  audioEl.onended = ()=>{ btn.textContent='▶ 原文 + 白话'; btn.classList.remove('playing'); audioEl=null; };
-  audioEl.onerror = ()=>{ toast('音频加载失败'); audioEl=null; };
-  audioEl.play().catch(()=>toast('音频加载失败'));
-  btn.textContent='❚❚ 暂停'; btn.classList.add('playing');
+  btn.textContent = '⏳ 加载中…';
+  try{
+    const src = await audioSrc(c.audio_url);
+    audioEl = new Audio(src);
+    audioEl.onended = ()=>{ btn.textContent='▶ 原文 + 白话'; btn.classList.remove('playing'); audioEl=null; };
+    audioEl.onerror = ()=>{ toast('音频加载失败'); btn.textContent='▶ 原文 + 白话'; audioEl=null; };
+    await audioEl.play();
+    btn.textContent='❚❚ 暂停'; btn.classList.add('playing');
+  }catch(e){
+    btn.textContent='▶ 原文 + 白话';
+    toast('音频加载失败');
+    audioEl = null;
+  }
 }
 
 /* ---------------- 功法 ---------------- */
@@ -454,8 +500,8 @@ function renderConsGroup(){
   const info = consData.types[t] || {};
   const qs = consData.questions.filter(q=>q.type===t);
   $('cons-progress').innerHTML = CONS_ORDER.map((x,i)=>
-    `<span class="cp-dot ${i<consGroup?'done':i===consGroup?'cur':''}">${consData.types[x]?.icon||x}</span>`).join('');
-  $('cons-group-title').textContent = `${info.name||t} ${info.icon||''}`;
+    `<span class="cp-dot ${i<consGroup?'done':i===consGroup?'cur':''}">${i+1}</span>`).join('');
+  $('cons-group-title').textContent = `${info.name||t}`;
   $('cons-questions').innerHTML = qs.map(q=>
     `<div class="cons-q">
        <div class="cons-q-text">${q.text}</div>
