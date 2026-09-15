@@ -144,9 +144,9 @@ body{
 .shelf-count{text-align:center;color:var(--muted);font-size:11px;padding:14px 0 8px;}
 
 /* ---------- 弹层（底部抽屉） ---------- */
-.overlay{position:fixed;inset:0;background:rgba(20,32,45,.45);z-index:300;opacity:0;pointer-events:none;transition:.25s;display:flex;align-items:flex-end;justify-content:center;}
+.overlay{position:fixed;inset:0;background:rgba(20,32,45,.62);z-index:300;opacity:0;pointer-events:none;transition:.25s;display:flex;align-items:flex-end;justify-content:center;}
 .overlay.show{opacity:1;pointer-events:auto;}
-.sheet{background:var(--bg);width:100%;max-width:520px;max-height:88vh;border-radius:22px 22px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(30px);transition:.25s;overflow-y:auto;}
+.sheet{background:#fff;box-shadow:0 -6px 28px rgba(20,32,45,.18);width:100%;max-width:520px;max-height:88vh;border-radius:22px 22px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(30px);transition:.25s;overflow-y:auto;}
 .overlay.show .sheet{transform:translateY(0);}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .sheet-cat{font-size:12px;color:var(--gold);font-weight:700;letter-spacing:1px;}
@@ -193,11 +193,11 @@ body{
 .cd-fit span{color:#5a6b80;}
 
 /* ---------- 体质测试 ---------- */
-.cons-wrap{padding:6px 2px 2px;}
-.cons-progress{display:flex;justify-content:space-between;margin:2px 0 14px;}
-.cp-dot{font-size:14px;opacity:.35;transition:.2s;}
-.cp-dot.cur{opacity:1;transform:scale(1.35);}
-.cp-dot.done{opacity:.75;}
+.cons-wrap{padding:6px 2px 2px;background:#fff;}
+.cons-progress{display:flex;justify-content:center;gap:9px;margin:2px 0 16px;}
+.cp-dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;background:#e8eef5;color:#8a94a3;transition:.2s;flex:none;}
+.cp-dot.cur{background:linear-gradient(135deg,var(--gold-light),var(--gold));color:#fff;transform:scale(1.18);box-shadow:0 3px 10px rgba(184,134,11,.35);}
+.cp-dot.done{background:var(--green-bg);color:var(--green);}
 .cons-group-title{font-size:17px;font-weight:700;color:var(--blue-dark);letter-spacing:1px;text-align:center;margin-bottom:12px;}
 .cons-q{margin-bottom:16px;}
 .cons-q-text{font-size:13.5px;font-weight:600;color:var(--ink);margin-bottom:8px;line-height:1.6;}
