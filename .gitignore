@@ -1,0 +1,19 @@
+# 数据库（运行时自动建，存数据用）
+data/yidao.db
+data/yidao.backup.db
+data/config.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行时
+nohup.out
+*.log
+.DS_Store
+
+# 临时工作目录
+.venv/
+venv/
+.env
