@@ -1,0 +1,652 @@
+"""医道学堂 MVP —— FastAPI 主服务
+复用灵犀笔记同款架构：FastAPI + SQLAlchemy + SQLite，前端 PWA 静态托管。
+启动：uvicorn app.main:app --host 0.0.0.0 --port 8700
+"""
+import json
+import os
+import sys
+from datetime import date, datetime, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy import select, func, text
+
+from database import SEED_DIR, AUDIO_DIR, BASE_DIR
+from models import engine, Base, Card, Review, Practice, Question, Constitution
+from sqlalchemy.orm import Session
+
+app = FastAPI(title="医道学堂", version="1.1.1")
+
+SPACING = [1, 2, 4, 7, 15, 30]  # 艾宾浩斯复习间隔（天）
+PRACTICE_ITEMS = {"baduanjin": "八段锦", "zhanzhuang": "站桩", "jingzuo": "静坐"}
+
+
+# ---------------- 静态数据：体质 / 配伍 / 宜忌（不进数据库，启动加载） ----------------
+def _load_json(name: str):
+    path = os.path.join(SEED_DIR, name)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+CONSTITUTION = _load_json("constitution.json")   # 问卷 + 九型说明
+PAIRS = _load_json("pairs.json")                 # 经典配伍 + 十八反十九畏
+SUIT_MAP = _load_json("suit.json")               # 药材/成药 × 体质宜忌（按名称查）
+BIRTH = _load_json("birth.json")                 # 生日 → 先天体质（五运六气）
+GONGFA = _load_json("gongfa.json")               # 功法详解（站桩 / 八段锦 / 静坐）
+
+
+# ---------------- 启动：建表 + 增量导入种子内容 ----------------
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        _import_seed(db)
+
+
+def _import_seed(db: Session):
+    """启动导入 data/seed 下的内容库；按类型查漏补缺（老库也能增量更新）"""
+    files = {"tao.json": "tao", "tcm.json": "tcm", "acup.json": "acup", "patent.json": "patent"}
+    for fname, expected_type in files.items():
+        path = os.path.join(SEED_DIR, fname)
+        if not os.path.exists(path):
+            continue
+        # 增量：库里已有该类型就跳过，没有才导入
+        existing = db.scalar(select(func.count(Card.id)).where(Card.type == expected_type)) or 0
+        if existing > 0:
+            continue
+        with open(path, encoding="utf-8") as f:
+            cards = json.load(f)
+        for i, c in enumerate(cards):
+            db.add(Card(
+                type=c.get("type", expected_type),
+                category=c.get("category", ""),
+                title=c.get("title", ""),
+                subtitle=c.get("subtitle", ""),
+                front_text=c.get("front_text", ""),
+                front_hint=c.get("front_hint", ""),
+                back=c.get("back", []),
+                audio=c.get("audio", ""),
+                seq=c.get("seq", i),
+            ))
+        db.commit()
+
+
+# ---------------- 工具 ----------------
+def _card_out(db: Session, card: Card, with_review: bool = False) -> dict:
+    audio_url = ""
+    if card.audio:
+        p = os.path.join(AUDIO_DIR, card.audio)
+        if os.path.exists(p):
+            audio_url = "/audio/" + card.audio
+    d = {
+        "id": card.id, "type": card.type, "category": card.category,
+        "title": card.title, "subtitle": card.subtitle,
+        "front_text": card.front_text, "front_hint": card.front_hint,
+        "back": card.back, "audio_url": audio_url,
+    }
+    # 体质宜忌（药材/中成药）：前端结合用户体质显示 ✅/⚠️
+    s = SUIT_MAP.get(card.title)
+    if s:
+        d["suit"] = s.get("suit", [])
+        d["avoid"] = s.get("avoid", [])
+        d["suit_note"] = s.get("suit_note", "")
+        d["avoid_note"] = s.get("avoid_note", "")
+    if with_review:
+        r = db.scalar(select(Review).where(Review.card_id == card.id))
+        d["is_review"] = bool(r)
+    return d
+
+
+def _today_done_count(db: Session) -> int:
+    return db.scalar(
+        select(func.count(Review.id)).where(Review.last_reviewed_at >= datetime.combine(date.today(), datetime.min.time()))
+    ) or 0
+
+
+def _streak(db: Session) -> int:
+    # SQLite 的 date() 返回字符串；用纯 SQL 写法，兼容 SQLAlchemy 2.0.30
+    rows = db.execute(
+        text("SELECT DISTINCT date(created_at) AS d FROM practices ORDER BY d DESC LIMIT 400")
+    ).scalars().all()
+    # SQLite 的 date() 返回字符串，统一转成 date 对象再比较
+    days = {(date.fromisoformat(str(r)) if not isinstance(r, date) else r) for r in rows}
+    cur = date.today()
+    if cur not in days:            # 今天还没打卡，从昨天起算（保留火种）
+        cur -= timedelta(days=1)
+    n = 0
+    while cur in days:
+        n += 1
+        cur -= timedelta(days=1)
+    return n
+
+
+# ---------------- API：今日 ----------------
+@app.get("/api/today")
+def api_today():
+    with Session(engine) as db:
+        today = date.today()
+        learned_ids = set(db.scalars(select(Review.card_id)).all())
+
+        # 新卡：医类 1 张 + 道家 1 张（按 seq 顺序）
+        mq = select(Card).where(Card.type.in_(["tcm", "acup"]))
+        tq = select(Card).where(Card.type == "tao")
+        if learned_ids:
+            mq = mq.where(~Card.id.in_(learned_ids))
+            tq = tq.where(~Card.id.in_(learned_ids))
+        medical = db.scalars(mq.order_by(Card.seq, Card.id).limit(1)).all()
+        tao = db.scalars(tq.order_by(Card.seq, Card.id).limit(1)).all()
+        new_cards = [_card_out(db, c) for c in medical + tao]
+
+        # 复习：到期卡（含今天），最多 5 张
+        due = db.scalars(
+            select(Review).where(Review.next_review_at <= today).order_by(Review.next_review_at).limit(5)
+        ).all()
+        review_cards = []
+        for r in due:
+            c = db.get(Card, r.card_id)
+            if c:
+                cd = _card_out(db, c)
+                cd["due_days"] = (today - r.next_review_at).days
+                review_cards.append(cd)
+
+        plan = len(new_cards) + len(review_cards)          # 今日卡片计划
+        done_today = _today_done_count(db)                  # 今天已学卡数（含复习）
+
+        # 功法
+        p_today = db.scalar(
+            select(func.count(Practice.id)).where(Practice.created_at >= datetime.combine(today, datetime.min.time()))
+        ) or 0
+        return {
+            "date": str(today),
+            "new_cards": new_cards,
+            "review_cards": review_cards,
+            "plan": plan,
+            "done_today": done_today,
+            "cards_done": done_today >= plan and plan > 0 or (plan == 0 and done_today > 0),
+            "practice_done": p_today > 0,
+            "streak": _streak(db),
+        }
+
+
+# ---------------- API：提交学习结果 ----------------
+class ReviewIn(BaseModel):
+    card_id: int
+    result: str  # got / again
+
+
+@app.post("/api/review")
+def api_review(body: ReviewIn):
+    if body.result not in ("got", "again"):
+        raise HTTPException(400, "result 只能是 got / again")
+    with Session(engine) as db:
+        card = db.get(Card, body.card_id)
+        if not card:
+            raise HTTPException(404, "卡片不存在")
+        today = date.today()
+        r = db.scalar(select(Review).where(Review.card_id == body.card_id))
+        if r is None:
+            r = Review(card_id=body.card_id, first_seen_at=today,
+                       next_review_at=today, review_count=0)
+            db.add(r)
+        r.last_result = body.result
+        r.last_reviewed_at = datetime.now()
+        if body.result == "got":
+            r.review_count += 1
+            idx = min(r.review_count, len(SPACING)) - 1
+            r.next_review_at = today + timedelta(days=SPACING[idx])
+            if r.review_count >= len(SPACING):
+                r.status = "mastered"
+        else:  # again：明天再见，次数不清零、不进阶
+            r.next_review_at = today + timedelta(days=1)
+        db.commit()
+        return {"ok": True, "card_id": body.card_id,
+                "next_review": str(r.next_review_at), "status": r.status}
+
+
+# ---------------- API：功法打卡 ----------------
+class PracticeIn(BaseModel):
+    item: str = "baduanjin"
+    minutes: int = 15
+    note: str = ""
+
+
+@app.post("/api/practice/checkin")
+def api_checkin(body: PracticeIn):
+    if body.item not in PRACTICE_ITEMS:
+        raise HTTPException(400, "item 必须是 " + "/".join(PRACTICE_ITEMS))
+    with Session(engine) as db:
+        db.add(Practice(item=body.item, minutes=max(1, min(body.minutes, 180)),
+                        note=body.note[:255], created_at=datetime.now()))  # 本地时间，避免 UTC 错位
+        db.commit()
+        return {"ok": True, "streak": _streak(db), "item": PRACTICE_ITEMS[body.item]}
+
+
+@app.get("/api/practice/history")
+def api_practice_history(limit: int = 30):
+    with Session(engine) as db:
+        rows = db.scalars(select(Practice).order_by(Practice.created_at.desc()).limit(limit)).all()
+        return [{"item": r.item, "item_name": PRACTICE_ITEMS.get(r.item, r.item),
+                 "minutes": r.minutes, "note": r.note,
+                 "time": r.created_at.strftime("%m-%d %H:%M")} for r in rows]
+
+
+@app.get("/api/gongfa")
+def api_gongfa(item: str = ""):
+    """功法详解：列表 或 单项详情"""
+    items = GONGFA.get("items", {})
+    if not GONGFA:
+        return {"ok": False, "reason": "功法数据未加载"}
+    if not item:
+        return {"ok": True, "list": [
+            {"key": k, "name": v.get("name", k), "alias": v.get("alias", ""),
+             "subtitle": v.get("subtitle", "")} for k, v in items.items()
+        ]}
+    v = items.get(item)
+    if not v:
+        return {"ok": False, "reason": "没有这项功法"}
+    return {"ok": True, "item": item, "data": v}
+
+
+# ---------------- API：统计 ----------------
+@app.get("/api/stats")
+def api_stats():
+    with Session(engine) as db:
+        total = db.scalar(select(func.count(Card.id))) or 0
+        learned = db.scalar(select(func.count(func.distinct(Review.card_id)))) or 0
+        mastered = db.scalar(select(func.count(Review.id)).where(Review.status == "mastered")) or 0
+        tao_total = db.scalar(select(func.count(Card.id)).where(Card.type == "tao")) or 0
+        tao_learned = db.execute(
+            select(func.count(Review.id)).join(Card, Review.card_id == Card.id).where(Card.type == "tao")
+        ).scalar() or 0
+        # 分类进度
+        rows = db.execute(
+            select(Card.category,
+                   func.count(Card.id),
+                   func.count(Review.id))
+            .outerjoin(Review, Review.card_id == Card.id)
+            .group_by(Card.category)
+        ).all()
+        breakdown = [{"category": r[0], "total": r[1], "learned": r[2]} for r in rows]
+        return {
+            "total_cards": total, "learned": learned, "mastered": mastered,
+            "learn_pct": round(learned / total * 100, 1) if total else 0,
+            "tao_progress": f"{tao_learned}/{tao_total}",
+            "streak": _streak(db),
+            "practice_total": db.scalar(select(func.count(Practice.id))) or 0,
+            "breakdown": breakdown,
+        }
+
+
+# ---------------- 静态：前端 + 音频 ----------------
+app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "app", "static")), name="static")
+
+
+# ---------------- API：书架（全库查阅） ----------------
+TYPE_NAMES = {"tao": "道德经", "tcm": "药材", "acup": "穴位", "patent": "中成药"}
+
+@app.get("/api/library")
+def api_library(q: str = "", type: str = ""):
+    """全库轻量列表：搜索标题/拼音/分类/正文，type 可过滤"""
+    with Session(engine) as db:
+        query = select(Card)
+        if type in TYPE_NAMES:
+            query = query.where(Card.type == type)
+        if q.strip():
+            kw = f"%{q.strip()}%"
+            query = query.where(
+                Card.title.like(kw) | Card.subtitle.like(kw) |
+                Card.category.like(kw) | Card.front_text.like(kw) |
+                Card.front_hint.like(kw)
+            )
+        rows = db.scalars(query.order_by(Card.type.desc(), Card.seq, Card.id)).all()
+        out = []
+        for c in rows:
+            item = {
+                "id": c.id, "type": c.type, "type_name": TYPE_NAMES.get(c.type, c.type),
+                "category": c.category, "title": c.title, "subtitle": c.subtitle,
+                "preview": (c.front_text[:40] + "…") if len(c.front_text) > 40
+                           else (c.front_text or c.front_hint),
+                "has_audio": bool(c.audio and os.path.exists(os.path.join(AUDIO_DIR, c.audio))),
+            }
+            s = SUIT_MAP.get(c.title)
+            if s:
+                item["suit"] = s.get("suit", [])
+                item["avoid"] = s.get("avoid", [])
+            out.append(item)
+        return {"total": len(out), "items": out}
+
+
+@app.get("/api/card/{card_id}")
+def api_card(card_id: int):
+    """单卡完整详情（书架点开时用）"""
+    with Session(engine) as db:
+        c = db.get(Card, card_id)
+        if not c:
+            raise HTTPException(404, "卡片不存在")
+        return _card_out(db, c)
+
+
+# ---------------- API：体质测试（九型体质） ----------------
+BIASED_TYPES = ["A", "B", "C", "D", "E", "F", "G", "H"]   # 偏颇体质
+ALL_TYPES = ["P"] + BIASED_TYPES
+
+
+def _level_of(score: int) -> str:
+    """偏颇体质判定：≥40 是 / 30-39 倾向是 / <30 否"""
+    if score >= 40:
+        return "是"
+    if score >= 30:
+        return "倾向是"
+    return "否"
+
+
+@app.get("/api/constitution/questions")
+def api_constitution_questions():
+    """返回完整问卷：题目 + 选项 + 九型名称（供前端渲染）"""
+    if not CONSTITUTION:
+        raise HTTPException(503, "体质模块未启用")
+    return {
+        "options": CONSTITUTION.get("options", []),
+        "types": CONSTITUTION.get("types", {}),
+        "questions": CONSTITUTION.get("questions", []),
+    }
+
+
+class ConstitutionIn(BaseModel):
+    answers: dict          # {qid: 1/2/3}
+
+
+def _judge(scores: dict) -> dict:
+    """按王琦标准简化判定：主体质 / 次体质 / 各型等级"""
+    p_score = scores.get("P", 0)
+    biased = {t: scores.get(t, 0) for t in BIASED_TYPES}
+    has_true = any(s >= 40 for s in biased.values())            # 有无明确偏颇
+    has_tend = any(30 <= s < 40 for s in biased.values())      # 有无倾向
+
+    ranked = sorted(biased.items(), key=lambda x: -x[1])
+    if has_true or has_tend:
+        main_type = ranked[0][0]
+        main_level = _level_of(biased[main_type])
+        subs = [{"type": t, "level": _level_of(s)}
+                for t, s in ranked[1:] if s >= 30]
+    elif p_score >= 60:
+        main_type, main_level, subs = "P", "是", []
+    else:
+        # 分数普遍偏低：温和提示
+        main_type = "P"
+        main_level = "倾向是"
+        subs = []
+    return {"main_type": main_type, "main_level": main_level, "sub_types": subs}
+
+
+@app.post("/api/constitution/submit")
+def api_constitution_submit(body: ConstitutionIn):
+    """提交答卷：计分 + 判定 + 存库 + 返回结果与调养建议"""
+    if not CONSTITUTION:
+        raise HTTPException(503, "体质模块未启用")
+    answers = body.answers
+    if not isinstance(answers, dict) or len(answers) < 30:
+        raise HTTPException(400, "答卷不完整（至少需要答 30 题）")
+    valid_qids = {q["qid"]: q["type"] for q in CONSTITUTION["questions"]}
+    raw = {t: 0 for t in ALL_TYPES}
+    for qid, val in answers.items():
+        if qid in valid_qids and isinstance(val, int) and 1 <= val <= 3:
+            raw[valid_qids[qid]] += val
+    # 每型 5 题：原始分 5~15 → 转换分 0~100
+    scores = {t: round((v - 5) / 10 * 100) for t, v in raw.items()}
+
+    judge = _judge(scores)
+    profiles = CONSTITUTION.get("profiles", {})
+    main_profile = profiles.get(judge["main_type"], {})
+
+    with Session(engine) as db:
+        row = Constitution(main_type=judge["main_type"],
+                           sub_types=[s["type"] for s in judge["sub_types"]],
+                           scores=scores)
+        db.add(row)
+        db.commit()
+
+    return {
+        "ok": True,
+        "main_type": judge["main_type"],
+        "main_level": judge["main_level"],
+        "sub_types": judge["sub_types"],
+        "scores": scores,
+        "profile": main_profile,
+        "types": CONSTITUTION.get("types", {}),
+        "disclaimer": "本测试为学习参考（简化量表），不构成医疗诊断；身体不适请咨询专业中医师。",
+    }
+
+
+@app.get("/api/constitution/result")
+def api_constitution_result():
+    """取最近一次体质测试结果"""
+    with Session(engine) as db:
+        row = db.scalar(select(Constitution).order_by(Constitution.id.desc()).limit(1))
+        if not row:
+            return {"ok": False, "reason": "还没测过"}
+        judge = _judge(row.scores or {})
+        return {
+            "ok": True,
+            "main_type": row.main_type,
+            "main_level": judge.get("main_level", ""),
+            "sub_types": [{"type": t, "level": _level_of((row.scores or {}).get(t, 0))}
+                          for t in (row.sub_types or [])],
+            "scores": row.scores,
+            "time": row.created_at.strftime("%Y-%m-%d %H:%M"),
+            "profile": CONSTITUTION.get("profiles", {}).get(row.main_type, {}),
+            "types": CONSTITUTION.get("types", {}),
+        }
+
+
+@app.get("/api/constitution/by-birth")
+def api_constitution_by_birth(date: str = ""):
+    """按出生日期推算先天体质倾向（五运六气：岁运 + 出生季节）"""
+    if not BIRTH:
+        return {"ok": False, "reason": "生日推算数据未加载"}
+    date = (date or "").strip()
+    try:
+        y, m, d = [int(x) for x in date.split("-")[:3]]
+    except Exception:
+        return {"ok": False, "reason": "日期格式应为 YYYY-MM-DD"}
+    if not (1900 <= y <= 2100) or not (1 <= m <= 12) or not (1 <= d <= 31):
+        return {"ok": False, "reason": "日期超出合理范围"}
+
+    gan = BIRTH.get("tail_to_gan", {}).get(str(y % 10))
+    yun = BIRTH.get("gan", {}).get(gan or "", {})
+    key = (yun.get("element", "") + yun.get("degree", "")) if yun else ""
+    prof = BIRTH.get("yun_profile", {}).get(key, {})
+
+    # 出生季节
+    season = next((s for s in BIRTH.get("seasons", []) if m in s.get("months", [])), {})
+
+    # 综合：岁运为主，季节相同则加强
+    types = list(prof.get("types", []))
+    season_boost = [t for t in season.get("boost", []) if t in types]
+    merged = list(dict.fromkeys(types + (season.get("boost", []) or [])))[:3]
+
+    tinfo = CONSTITUTION.get("types", {})
+
+    # 依据先天倾向给出药材提示（复用宜忌表）
+    herb_ok, herb_no = [], {}
+    for name, v in SUIT_MAP.items():
+        if merged and merged[0] in (v.get("suit") or []):
+            herb_ok.append(name)
+        if merged and merged[0] in (v.get("avoid") or []):
+            herb_no[name] = v.get("avoid_note", "")
+
+    return {
+        "ok": True,
+        "date": date,
+        "year": y,
+        "gan": gan,
+        "yun": yun.get("name", ""),
+        "yun_key": key,
+        "summary": prof.get("summary", ""),
+        "weak_organ": prof.get("weak_organ", ""),
+        "type_note": prof.get("type_note", ""),
+        "advice": prof.get("advice", ""),
+        "risk": prof.get("risk", ""),
+        "season": {
+            "name": season.get("name", ""),
+            "organ": season.get("organ", ""),
+            "qi": season.get("qi", ""),
+            "note": season.get("note", ""),
+            "advice": season.get("advice", ""),
+        },
+        "season_boost": season_boost,
+        "main_type": merged[0] if merged else "",
+        "main_name": tinfo.get(merged[0], {}).get("name", "") if merged else "",
+        "sub_types": [{"type": t, "name": tinfo.get(t, {}).get("name", "")} for t in merged[1:]],
+        "all_types": [{"type": t, "name": tinfo.get(t, {}).get("name", "")} for t in merged],
+        "herb_ok": herb_ok[:12],
+        "herb_avoid": herb_no,
+        "disclaimer": BIRTH.get("disclaimer", ""),
+    }
+
+
+# ---------------- API：配伍实验室 ----------------
+@app.get("/api/pair")
+def api_pair(a: str = "", b: str = ""):
+    """查两味药的配伍关系：先查十八反十九畏（危险），再查经典配伍表"""
+    a, b = a.strip(), b.strip()
+    if not a or not b:
+        raise HTTPException(400, "请提供两味药（参数 a 和 b）")
+    if a == b:
+        raise HTTPException(400, "请选择两味不同的药")
+    if not PAIRS:
+        raise HTTPException(503, "配伍模块未启用")
+    pair_set = {a, b}
+    # 1) 反畏红线
+    for p in PAIRS.get("incompatible", []):
+        if {p["a"], p["b"]} == pair_set:
+            return {"found": True, "danger": True, "relation": "相反",
+                    "source": p["source"], "note": p["note"],
+                    "effect": f"{p['note']}——禁止配伍！",
+                    "seven": PAIRS["seven"]}
+    # 2) 经典配伍
+    for p in PAIRS.get("classic", []):
+        if {p["a"], p["b"]} == pair_set:
+            return {"found": True, "danger": False, "relation": p["relation"],
+                    "formula": p["formula"], "effect": p["effect"],
+                    "note": PAIRS["seven"].get(p["relation"], ""),
+                    "seven": PAIRS["seven"]}
+    # 3) 未收录
+    return {"found": False, "danger": False,
+            "hint": "经典配伍表未收录这对组合。可以用「问一问」让 AI 助教分析这对搭配。"}
+
+
+@app.get("/api/pair/inputs")
+def api_pair_inputs():
+    """配伍实验室的可选药名（药材库 + 中成药 + 反畏涉及的药）"""
+    names = set()
+    with Session(engine) as db:
+        rows = db.scalars(select(Card).where(Card.type.in_(["tcm", "patent"]))).all()
+        for c in rows:
+            names.add(c.title)
+    for p in PAIRS.get("classic", []):
+        names.update([p["a"], p["b"]])
+    for p in PAIRS.get("incompatible", []):
+        names.update([p["a"], p["b"]])
+    return {"items": sorted(names)}
+
+
+# ---------------- API：学习问答（AI 助教） ----------------
+ASK_SYSTEM = (
+    "你是「医道学堂」App 的助教，用户在学习中医（药材、穴位）与道家经典（道德经）。"
+    "回答规则：1) 简洁口语化，不超过200字，可分点；2) 概念讲清'是什么+为什么好记'；"
+    "3) 涉及具体健康问题必须提醒'具体调理请咨询专业医师'；4) 与中医道家无关的问题，礼貌引导回学习话题。"
+)
+
+def _dashscope_key() -> str:
+    """Key 来源：环境变量 DASHSCOPE_API_KEY 优先，其次 data/config.json 的 dashscope_api_key"""
+    k = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if k:
+        return k
+    cfg_path = os.path.join(BASE_DIR, "data", "config.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                return str(json.load(f).get("dashscope_api_key", "")).strip()
+        except Exception:
+            return ""
+    return ""
+
+class AskIn(BaseModel):
+    question: str
+    card_id: int = 0
+
+@app.post("/api/ask")
+def api_ask(body: AskIn):
+    q = body.question.strip()[:500]
+    if not q:
+        raise HTTPException(400, "问题不能为空")
+    # 组装卡片上下文
+    ctx = ""
+    if body.card_id:
+        with Session(engine) as db:
+            c = db.get(Card, body.card_id)
+            if c:
+                pts = "；".join(r[1] for r in (c.back or [])[:2])
+                ctx = f"【用户正在学习这张卡】{c.title}（{c.category}）：{(c.front_text or c.front_hint)[:120]}" + (f"｜要点：{pts[:150]}" if pts else "") + "\n"
+    answer, ok = "", True
+    key = _dashscope_key()
+    if not key:
+        ok = False
+        answer = "（AI 助教还没接入钥匙：需要通义 DashScope API Key。你的问题已记录下来，配置好 Key 后重新问即可。）"
+    else:
+        try:
+            import requests
+            resp = requests.post(
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": "qwen-turbo",
+                    "messages": [
+                        {"role": "system", "content": ASK_SYSTEM},
+                        {"role": "user", "content": ctx + q},
+                    ],
+                },
+                timeout=30,
+            )
+            data = resp.json()
+            answer = str(data["choices"][0]["message"]["content"]).strip()
+        except Exception:
+            ok = False
+            answer = "AI 助教暂时联系不上（网络或额度问题），问题已记录，稍后再试。"
+    with Session(engine) as db:
+        db.add(Question(question=q, answer=answer if ok else "", card_id=body.card_id or None))
+        db.commit()
+    return {"ok": ok, "answer": answer}
+
+@app.get("/api/ask/history")
+def api_ask_history(limit: int = 20):
+    with Session(engine) as db:
+        rows = db.scalars(
+            select(Question).order_by(Question.id.desc()).limit(min(limit, 50))
+        ).all()
+        return [{"id": r.id, "question": r.question, "answer": r.answer,
+                 "card_id": r.card_id, "time": r.created_at.strftime("%m-%d %H:%M")}
+                for r in rows]
+
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(BASE_DIR, "app", "static", "index.html"))
+
+
+@app.get("/sw.js")
+def sw_js():
+    """Service Worker 挂根路径，作用域才能覆盖整站（/static/ 下注册 scope 不含首页）"""
+    return FileResponse(
+        os.path.join(BASE_DIR, "app", "static", "sw.js"),
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
