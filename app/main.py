@@ -50,31 +50,59 @@ def startup():
 
 
 def _import_seed(db: Session):
-    """启动导入 data/seed 下的内容库；按类型查漏补缺（老库也能增量更新）"""
+    """启动导入 data/seed 下的内容库；按 (类型, 标题) 查漏补缺，老库也能增量补进新内容。
+
+    注意：早期版本是「按类型判断，已有就整份跳过」，导致内容扩充后新条目永远进不来
+    （例如药材从 40 味扩到 120 味，线上仍是 40）。现在改为逐条按标题比对：
+      · 标题不存在 → 新增
+      · 标题已存在 → 更新文案字段（不覆盖已录好的 audio）
+    """
     files = {"tao.json": "tao", "tcm.json": "tcm", "acup.json": "acup", "patent.json": "patent"}
     for fname, expected_type in files.items():
         path = os.path.join(SEED_DIR, fname)
         if not os.path.exists(path):
             continue
-        # 增量：库里已有该类型就跳过，没有才导入
-        existing = db.scalar(select(func.count(Card.id)).where(Card.type == expected_type)) or 0
-        if existing > 0:
-            continue
         with open(path, encoding="utf-8") as f:
             cards = json.load(f)
+        # 该类型下已存在的卡片：标题 -> ORM 对象
+        rows = db.execute(select(Card).where(Card.type == expected_type)).scalars().all()
+        have = {}
+        for r in rows:
+            have[r.title] = r
+        added = updated = 0
         for i, c in enumerate(cards):
-            db.add(Card(
-                type=c.get("type", expected_type),
-                category=c.get("category", ""),
-                title=c.get("title", ""),
-                subtitle=c.get("subtitle", ""),
-                front_text=c.get("front_text", ""),
-                front_hint=c.get("front_hint", ""),
-                back=c.get("back", []),
-                audio=c.get("audio", ""),
-                seq=c.get("seq", i),
-            ))
-        db.commit()
+            title = c.get("title", "")
+            if not title:
+                continue
+            old = have.get(title)
+            if old is None:
+                db.add(Card(
+                    type=c.get("type", expected_type),
+                    category=c.get("category", ""),
+                    title=title,
+                    subtitle=c.get("subtitle", ""),
+                    front_text=c.get("front_text", ""),
+                    front_hint=c.get("front_hint", ""),
+                    back=c.get("back", []),
+                    audio=c.get("audio", ""),
+                    seq=c.get("seq", i),
+                ))
+                added += 1
+            else:
+                # 已存在：刷新文案，但保留已有音频
+                old.category = c.get("category", old.category)
+                old.subtitle = c.get("subtitle", old.subtitle)
+                old.front_text = c.get("front_text", old.front_text)
+                old.front_hint = c.get("front_hint", old.front_hint)
+                old.back = c.get("back", old.back)
+                old.seq = c.get("seq", old.seq)
+                if not old.audio:
+                    old.audio = c.get("audio", "")
+                updated += 1
+        if added or updated:
+            db.commit()
+        print("[seed] %s: 新增 %d 条，更新 %d 条，共 %d 条"
+              % (fname, added, updated, len(cards)))
 
 
 # ---------------- 工具 ----------------
